@@ -76,7 +76,7 @@ func Open(dir string, opts ...Option) (*DB, error) {
 	// 应用配置选项
 	options := &Options{
 		DataFileSizeLimit: 64 * 1024 * 1024, // 默认 64MB
-		IndexType:        IndexTypeMap,       // 默认使用 Map 索引
+		IndexType:        IndexTypeART,       // 默认使用 ART 索引
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -86,11 +86,7 @@ func Open(dir string, opts ...Option) (*DB, error) {
 	var idx index.Index
 	switch options.IndexType {
 	case IndexTypeART:
-		// 注意：使用 ART 需要确保已安装依赖
-		// go get github.com/plar/go-adaptive-radix-tree
-		// idx = index.NewARTIndex()
-		// 由于网络问题，暂不支持 ART 索引
-		idx = index.NewMapIndex()
+		idx = index.NewARTIndex()
 	default:
 		idx = index.NewMapIndex()
 	}

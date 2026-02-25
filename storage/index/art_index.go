@@ -1,6 +1,3 @@
-//go:build art
-// +build art
-
 package index
 
 import (
@@ -9,9 +6,8 @@ import (
 )
 
 // ARTIndex 是基于自适应基数树（Adaptive Radix Tree）的内存索引实现
-// 使用方式：go build -tags=art
 type ARTIndex struct {
-	tree adt.AdaptiveRadixTree
+	tree art.Tree
 }
 
 // NewARTIndex 创建一个新的 ART 索引实例
@@ -19,7 +15,7 @@ type ARTIndex struct {
 //   - *ARTIndex: ART 索引指针
 func NewARTIndex() *ARTIndex {
 	return &ARTIndex{
-		tree: adt.New(),
+		tree: art.New(),
 	}
 }
 
@@ -28,7 +24,7 @@ func NewARTIndex() *ARTIndex {
 //   - key: 键
 //   - pos: 位置指针
 func (idx *ARTIndex) Put(key []byte, pos *storage.Position) {
-	idx.tree.Insert(adt.Key(key), pos)
+	idx.tree.Insert(art.Key(key), pos)
 }
 
 // Get 根据键从 ART 索引获取位置
@@ -37,7 +33,7 @@ func (idx *ARTIndex) Put(key []byte, pos *storage.Position) {
 // 返回：
 //   - *storage.Position: 位置指针，不存在返回 nil
 func (idx *ARTIndex) Get(key []byte) *storage.Position {
-	value, found := idx.tree.Search(adt.Key(key))
+	value, found := idx.tree.Search(art.Key(key))
 	if !found {
 		return nil
 	}
@@ -50,7 +46,8 @@ func (idx *ARTIndex) Get(key []byte) *storage.Position {
 // 返回：
 //   - bool: 是否删除成功
 func (idx *ARTIndex) Delete(key []byte) bool {
-	return idx.tree.Delete(adt.Key(key))
+	_, deleted := idx.tree.Delete(art.Key(key))
+	return deleted
 }
 
 // Size 返回 ART 索引中的键值对数量
