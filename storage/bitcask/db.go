@@ -108,6 +108,14 @@ func Open(dir string, opts ...Option) (*DB, error) {
 	// 初始容量设置为 1000000，预估最多存储 100 万个 key
 	bloomFilter := index.NewBloomFilter(1000000, options.BloomFilterFP)
 
+	// 尝试从文件加载已存在的布隆过滤器
+	if loaded, err := bloomFilter.Load(dir, 1000000, options.BloomFilterFP); err != nil {
+		return nil, fmt.Errorf("加载布隆过滤器失败: %w", err)
+	} else if !loaded {
+		// 没有已存在的布隆过滤器文件，保持新创建的布隆过滤器
+		// 注释说明：布隆过滤器会在 bootstrap 过程中重建
+	}
+
 	// 创建数据库实例
 	db := &DB{
 		dir:         dir,
@@ -388,6 +396,13 @@ func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
+	// 保存布隆过滤器
+	if db.bloomFilter != nil {
+		if err := db.bloomFilter.Save(db.dir); err != nil {
+			return fmt.Errorf("保存布隆过滤器失败: %w", err)
+		}
+	}
+
 	// 关闭所有数据文件
 	if db.activeFile != nil {
 		if err := db.activeFile.Close(); err != nil {
@@ -405,8 +420,6 @@ func (db *DB) Close() error {
 	if db.index != nil {
 		db.index.Close()
 	}
-
-	// 布隆过滤器不需要显式关闭
 
 	return nil
 }

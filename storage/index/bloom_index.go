@@ -1,6 +1,10 @@
 package index
 
 import (
+	"io"
+	"os"
+	"path/filepath"
+
 	"github.com/bits-and-blooms/bloom/v3"
 	"sync"
 )
@@ -81,6 +85,86 @@ func (bf *BloomFilter) Cap() uint {
 	bf.mu.RLock()
 	defer bf.mu.RUnlock()
 	return bf.filter.Cap()
+}
+
+// Save 将布隆过滤器持久化到文件
+// 参数：
+//   - dir: 数据目录
+// 返回：
+//   - error: 保存错误
+func (bf *BloomFilter) Save(dir string) error {
+	bf.mu.RLock()
+	defer bf.mu.RUnlock()
+
+	// 创建 bloom 文件路径
+	filename := filepath.Join(dir, "bloom.filter")
+
+	// 打开文件
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// 使用 WriteTo 写入
+	_, err = bf.filter.WriteTo(file)
+	return err
+}
+
+// Load 从文件加载布隆过滤器
+// 参数：
+//   - dir: 数据目录
+//   - n: 预期存储的元素数量（用于创建新的布隆过滤器）
+//   - fp: 期望的误判率
+// 返回：
+//   - bool: 是否成功加载（false 表示文件不存在）
+//   - error: 加载错误
+func (bf *BloomFilter) Load(dir string, n uint, fp float64) (bool, error) {
+	filename := filepath.Join(dir, "bloom.filter")
+
+	// 打开文件
+	file, err := os.Open(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer file.Close()
+
+	// 使用 ReadFrom 读取
+	loadedFilter := new(bloom.BloomFilter)
+	_, err = loadedFilter.ReadFrom(file)
+	if err != nil {
+		return false, err
+	}
+
+	// 更新内部状态
+	bf.mu.Lock()
+	bf.filter = loadedFilter
+	bf.mu.Unlock()
+
+	return true, nil
+}
+
+// SaveToWriter 将布隆过滤器数据写入 io.Writer
+func (bf *BloomFilter) SaveToWriter(w io.Writer) (int64, error) {
+	bf.mu.RLock()
+	defer bf.mu.RUnlock()
+	return bf.filter.WriteTo(w)
+}
+
+// LoadFromReader 从 io.Reader 加载布隆过滤器
+func (bf *BloomFilter) LoadFromReader(r io.Reader) error {
+	loadedFilter := new(bloom.BloomFilter)
+	_, err := loadedFilter.ReadFrom(r)
+	if err != nil {
+		return err
+	}
+	bf.mu.Lock()
+	bf.filter = loadedFilter
+	bf.mu.Unlock()
+	return nil
 }
 
 // 确保 BloomFilter 实现了相关接口
