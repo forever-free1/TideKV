@@ -2,6 +2,20 @@ package index
 
 import "github.com/forever-free1/TideKV/storage"
 
+// IndexIterator 是索引迭代器的接口
+type IndexIterator interface {
+	// Next 移动到下一个键
+	Next()
+	// Key 返回当前键
+	Key() []byte
+	// Value 返回当前位置
+	Value() *storage.Position
+	// Error 返回错误
+	Error() error
+	// Close 关闭迭代器
+	Close()
+}
+
 // Index 是内存索引的抽象接口
 // 负责存储键到文件位置（Position）的映射
 type Index interface {
@@ -27,6 +41,11 @@ type Index interface {
 
 	// Size 返回索引中的键值对数量
 	Size() int
+
+	// Seek 查找第一个大于等于 key 的键
+	// 返回：
+	//   - IndexIterator: 迭代器
+	Seek(key []byte) IndexIterator
 
 	// Close 关闭索引，释放资源
 	Close()

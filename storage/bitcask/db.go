@@ -433,5 +433,97 @@ func (db *DB) GetFilePath(fileID uint32) string {
 	return filepath.Join(db.dir, fmt.Sprintf("%08d.data", fileID))
 }
 
+// Seek 查找第一个大于等于 key 的键，返回迭代器
+func (db *DB) Seek(key []byte) (storage.Iterator, error) {
+	// 使用索引的 Seek 获取位置迭代器
+	indexIter := db.index.Seek(key)
+	return &DBIterator{
+		db:         db,
+		indexIter:  indexIter,
+	}, nil
+}
+
+// DBIterator 是 DB 的迭代器实现
+// 包装索引迭代器，并从数据文件读取实际的 value
+type DBIterator struct {
+	db        *DB
+	indexIter index.IndexIterator
+	current   *storage.Position
+	key       []byte
+	value     []byte
+}
+
+// Next 移动到下一个键
+func (it *DBIterator) Next() {
+	if it.indexIter == nil {
+		return
+	}
+
+	it.indexIter.Next()
+	pos := it.indexIter.Value()
+	if pos == nil {
+		it.current = nil
+		it.key = nil
+		it.value = nil
+		return
+	}
+
+	it.current = pos
+	it.key = it.indexIter.Key()
+	it.value = nil
+}
+
+// Key 返回当前键
+func (it *DBIterator) Key() []byte {
+	return it.key
+}
+
+// Value 返回当前值
+func (it *DBIterator) Value() []byte {
+	if it.value != nil {
+		return it.value
+	}
+	if it.current == nil {
+		return nil
+	}
+
+	// 从数据文件读取 value
+	var dataFile *DataFile
+	if it.current.FileID == it.db.activeFile.GetFileID() {
+		dataFile = it.db.activeFile
+	} else {
+		var ok bool
+		dataFile, ok = it.db.olderFiles[it.current.FileID]
+		if !ok {
+			return nil
+		}
+	}
+
+	entry, err := dataFile.ReadEntry(it.current.Offset)
+	if err != nil {
+		return nil
+	}
+
+	it.value = entry.Value
+	return it.value
+}
+
+// Error 返回错误
+func (it *DBIterator) Error() error {
+	if it.indexIter == nil {
+		return nil
+	}
+	return it.indexIter.Error()
+}
+
+// Close 关闭迭代器
+func (it *DBIterator) Close() {
+	if it.indexIter != nil {
+		it.indexIter.Close()
+	}
+	it.db = nil
+	it.indexIter = nil
+}
+
 // 确保 DB 实现了 storage.Engine 接口
 var _ storage.Engine = (*DB)(nil)

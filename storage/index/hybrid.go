@@ -2,6 +2,7 @@ package index
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -270,6 +271,111 @@ func (hi *HybridIndex) Size() int {
 	warmSize := hi.warmTree.Size()
 	coldSize := len(hi.sparseIndex)
 	return hotSize + warmSize + coldSize
+}
+
+// Seek 查找第一个大于等于 key 的键，返回迭代器
+func (hi *HybridIndex) Seek(key []byte) IndexIterator {
+	// 收集所有层的 keys 并排序
+	allKeys := hi.collectAllKeysSorted(key)
+
+	return &HybridIterator{
+		hybridIndex: hi,
+		keys:       allKeys,
+		pos:        0,
+	}
+}
+
+// collectAllKeysSorted 收集所有大于等于 key 的 keys 并排序
+func (hi *HybridIndex) collectAllKeysSorted(startKey []byte) []string {
+	keySet := make(map[string]bool)
+
+	// 从 Hot 层收集
+	hi.hotMu.RLock()
+	for key := range hi.hotEntries {
+		if compareKeys([]byte(key), startKey) >= 0 {
+			keySet[key] = true
+		}
+	}
+	hi.hotMu.RUnlock()
+
+	// 从 Warm 层收集
+	hi.warmMu.RLock()
+	for key := range hi.warmEntries {
+		if compareKeys([]byte(key), startKey) >= 0 {
+			keySet[key] = true
+		}
+	}
+	hi.warmMu.RUnlock()
+
+	// 从 Cold 层收集
+	hi.sparseIndexMu.RLock()
+	for _, entry := range hi.sparseIndex {
+		if compareKeys(entry.Key, startKey) >= 0 {
+			keySet[string(entry.Key)] = true
+		}
+	}
+	hi.sparseIndexMu.RUnlock()
+
+	// 排序
+	keys := make([]string, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// HybridIterator 是 HybridIndex 的迭代器实现
+type HybridIterator struct {
+	hybridIndex *HybridIndex
+	keys       []string
+	pos        int
+}
+
+// Next 移动到下一个键
+func (it *HybridIterator) Next() {
+	if it.keys == nil {
+		return
+	}
+	if it.pos < len(it.keys) {
+		it.pos++
+	}
+}
+
+// Key 返回当前键
+func (it *HybridIterator) Key() []byte {
+	if it.keys == nil || it.pos < 0 || it.pos >= len(it.keys) {
+		return nil
+	}
+	return []byte(it.keys[it.pos])
+}
+
+// Value 返回当前位置
+func (it *HybridIterator) Value() *storage.Position {
+	if it.hybridIndex == nil || it.keys == nil || it.pos < 0 || it.pos >= len(it.keys) {
+		return nil
+	}
+	keyStr := it.keys[it.pos]
+
+	// 从各层查找
+	if pos := it.hybridIndex.getFromHot(keyStr); pos != nil {
+		return pos
+	}
+	if pos := it.hybridIndex.getFromWarm(keyStr); pos != nil {
+		return pos
+	}
+	return it.hybridIndex.getFromCold([]byte(keyStr))
+}
+
+// Error 返回错误
+func (it *HybridIterator) Error() error {
+	return nil
+}
+
+// Close 关闭迭代器
+func (it *HybridIterator) Close() {
+	it.hybridIndex = nil
+	it.keys = nil
 }
 
 // Close 关闭索引

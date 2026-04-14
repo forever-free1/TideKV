@@ -302,5 +302,11 @@ func newSnapshotStore(path string) (raft.SnapshotStore, error) {
 	return raft.NewFileSnapshotStore(path, 3, os.Stderr)
 }
 
+// Seek 查找第一个大于等于 key 的键，返回迭代器
+// 注意：Raft 集群中，Seek 是本地操作，不经过 Raft 共识
+func (n *Node) Seek(key []byte) (storage.Iterator, error) {
+	return n.engine.Seek(key)
+}
+
 // 确保 Node 实现了相关接口
 var _ storage.Engine = (*Node)(nil)
