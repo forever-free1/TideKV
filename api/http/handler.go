@@ -11,14 +11,20 @@ import (
 
 // ==================== Handler 定义 ====================
 
+// ConsistentNode 支持一致性读的存储节点接口
+type ConsistentNode interface {
+	Put(key []byte, value []byte) error
+	PutWithSession(sessionID string, key []byte, value []byte) (uint64, error)
+	Get(key []byte) ([]byte, error)
+	ConsistentGet(sessionID string, key []byte) ([]byte, error)
+	Delete(key []byte) error
+	NewSession(sessionID string)
+}
+
 // Handler HTTP 请求处理器
 type Handler struct {
 	// 存储引擎（通过 Raft Node 封装）
-	node interface {
-		Put(key []byte, value []byte) error
-		Get(key []byte) ([]byte, error)
-		Delete(key []byte) error
-	}
+	node ConsistentNode
 
 	// 事件通知中心
 	watchHub *watch.WatchHub
@@ -32,11 +38,7 @@ type Handler struct {
 //
 // 返回：
 //   - *Handler: Handler 实例
-func NewHandler(node interface {
-	Put(key []byte, value []byte) error
-	Get(key []byte) ([]byte, error)
-	Delete(key []byte) error
-}, watchHub *watch.WatchHub) *Handler {
+func NewHandler(node ConsistentNode, watchHub *watch.WatchHub) *Handler {
 	return &Handler{
 		node:      node,
 		watchHub:  watchHub,
@@ -59,9 +61,14 @@ func (h *Handler) RegisterRoutes(engine *gin.Engine) {
 		kv := v1.Group("/kv")
 		{
 			kv.POST("/put", h.Put)
+			kv.POST("/put_with_session", h.PutWithSession)
 			kv.GET("/get", h.Get)
+			kv.GET("/consistent_get", h.ConsistentGet)
 			kv.DELETE("/delete", h.Delete)
 		}
+
+		// Session 管理
+		v1.POST("/session/create", h.CreateSession)
 
 		// Watch API (SSE 长连接)
 		v1.GET("/watch", h.Watch)
@@ -111,6 +118,41 @@ func (h *Handler) Put(c *gin.Context) {
 	})
 }
 
+// PutWithSession 请求处理
+// POST /v1/kv/put_with_session
+// 带 session 跟踪的写入，返回 Raft index
+func (h *Handler) PutWithSession(c *gin.Context) {
+	type PutRequest struct {
+		SessionID string `json:"session_id" binding:"required"`
+		Key       string `json:"key" binding:"required"`
+		Value     string `json:"value" binding:"required"`
+	}
+
+	var req PutRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	// 写入存储并获取 index
+	index, err := h.node.PutWithSession(req.SessionID, []byte(req.Key), []byte(req.Value))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "put failed: " + err.Error(),
+		})
+		return
+	}
+
+	// 返回成功
+	c.JSON(http.StatusOK, gin.H{
+		"message": "ok",
+		"key":     req.Key,
+		"index":   index,
+	})
+}
+
 // Get 请求处理
 // GET /v1/kv/get?key=xxx
 func (h *Handler) Get(c *gin.Context) {
@@ -136,6 +178,67 @@ func (h *Handler) Get(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"key":   key,
 		"value": string(value),
+	})
+}
+
+// ConsistentGet 请求处理
+// GET /v1/kv/consistent_get?session_id=xxx&key=xxx
+// 一致性读，等待 session 的 lastIndex 被应用后再读取
+func (h *Handler) ConsistentGet(c *gin.Context) {
+	sessionID := c.Query("session_id")
+	key := c.Query("key")
+
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "session_id is required",
+		})
+		return
+	}
+	if key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "key is required",
+		})
+		return
+	}
+
+	// 读取数据（一致性）
+	value, err := h.node.ConsistentGet(sessionID, []byte(key))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "key not found",
+		})
+		return
+	}
+
+	// 返回成功
+	c.JSON(http.StatusOK, gin.H{
+		"key":   key,
+		"value": string(value),
+	})
+}
+
+// CreateSession 请求处理
+// POST /v1/session/create
+// 创建新的会话
+func (h *Handler) CreateSession(c *gin.Context) {
+	type CreateSessionRequest struct {
+		SessionID string `json:"session_id" binding:"required"`
+	}
+
+	var req CreateSessionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	// 创建 session
+	h.node.NewSession(req.SessionID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "ok",
+		"session_id": req.SessionID,
 	})
 }
 
@@ -242,17 +345,13 @@ func (h *Handler) Watch(c *gin.Context) {
 
 // Server HTTP 服务器
 type Server struct {
-	addr   string
-	engine *gin.Engine
+	addr    string
+	engine  *gin.Engine
 	handler *Handler
 }
 
 // NewServer 创建新的 Server
-func NewServer(addr string, node interface {
-	Put(key []byte, value []byte) error
-	Get(key []byte) ([]byte, error)
-	Delete(key []byte) error
-}, watchHub *watch.WatchHub) *Server {
+func NewServer(addr string, node ConsistentNode, watchHub *watch.WatchHub) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 
@@ -260,8 +359,8 @@ func NewServer(addr string, node interface {
 	handler.RegisterRoutes(engine)
 
 	return &Server{
-		addr:   addr,
-		engine: engine,
+		addr:    addr,
+		engine:  engine,
 		handler: handler,
 	}
 }

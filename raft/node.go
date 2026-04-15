@@ -38,6 +38,35 @@ type Node struct {
 	config   *NodeConfig
 	mu       sync.RWMutex
 	isLeader atomic.Bool
+
+	// Session tracking for Read-Your-Writes consistency
+	sessions   sync.Map // map[string]*Session
+}
+
+// Session 会话跟踪，用于 Read-Your-Writes 一致性
+type Session struct {
+	ID        string
+	LastIndex uint64 // 上次写入的 Raft index
+	mu        sync.Mutex
+}
+
+// NewSession 创建一个新的会话
+func (n *Node) NewSession(sessionID string) *Session {
+	s := &Session{
+		ID:        sessionID,
+		LastIndex: 0,
+	}
+	n.sessions.Store(sessionID, s)
+	return s
+}
+
+// GetSession 获取会话
+func (n *Node) GetSession(sessionID string) *Session {
+	s, _ := n.sessions.Load(sessionID)
+	if s == nil {
+		return nil
+	}
+	return s.(*Session)
 }
 
 // ==================== 节点创建 ====================
@@ -159,9 +188,75 @@ func (n *Node) Put(key []byte, value []byte) error {
 	return nil
 }
 
+// PutWithSession 通过 Raft 集群写入键值对，并更新会话的 lastIndex
+// 用于 Read-Your-Writes 一致性
+func (n *Node) PutWithSession(sessionID string, key []byte, value []byte) (uint64, error) {
+	// 创建命令
+	cmd := &LogCommand{
+		Type:  CommandPut,
+		Key:   key,
+		Value: value,
+	}
+
+	// 编码命令
+	data, err := encodeCommand(cmd)
+	if err != nil {
+		return 0, fmt.Errorf("编码命令失败: %w", err)
+	}
+
+	// 提交到 Raft
+	applyFuture := n.raft.Apply(data, 5*time.Second)
+	if err := applyFuture.Error(); err != nil {
+		return 0, fmt.Errorf("提交应用到 Raft 失败: %w", err)
+	}
+
+	// 检查返回结果
+	if err, ok := applyFuture.Response().(error); ok && err != nil {
+		return 0, err
+	}
+
+	// 获取 applied index 并更新 session
+	index := applyFuture.Index()
+	if sessionID != "" {
+		if s := n.GetSession(sessionID); s != nil {
+			s.mu.Lock()
+			s.LastIndex = index
+			s.mu.Unlock()
+		}
+	}
+
+	return index, nil
+}
+
 // Get 从本地存储引擎读取值
 // 注意：Get 不经过 Raft，直接从本地读取
 func (n *Node) Get(key []byte) ([]byte, error) {
+	return n.engine.Get(key)
+}
+
+// ConsistentGet 从本地存储引擎读取值，等待会话的 lastIndex 被应用后再读取
+// 用于 Read-Your-Writes 一致性
+func (n *Node) ConsistentGet(sessionID string, key []byte) ([]byte, error) {
+	// 如果有 session，先等待 lastIndex 被应用
+	if sessionID != "" {
+		if s := n.GetSession(sessionID); s != nil {
+			s.mu.Lock()
+			lastIndex := s.LastIndex
+			s.mu.Unlock()
+
+			if lastIndex > 0 {
+				// 等待直到 applied index >= lastIndex
+				for {
+					appliedIdx := n.raft.AppliedIndex()
+					if appliedIdx >= lastIndex {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+			}
+		}
+	}
+
 	return n.engine.Get(key)
 }
 
