@@ -16,8 +16,9 @@ import (
 type CommandType string
 
 const (
-	CommandPut    CommandType = "put"
-	CommandDelete CommandType = "delete"
+	CommandPut     CommandType = "put"
+	CommandDelete  CommandType = "delete"
+	CommandBatch   CommandType = "batch"
 )
 
 // LogCommand 用于在 Raft 集群间序列化和传递的用户指令
@@ -29,6 +30,18 @@ type LogCommand struct {
 	// 命令参数
 	Key   []byte `msgpack:"key"`
 	Value []byte `msgpack:"value,omitempty"` // Put 时需要
+}
+
+// BatchCommandItem 批量命令中的单个命令项
+type BatchCommandItem struct {
+	Type  CommandType `msgpack:"type"`
+	Key   []byte      `msgpack:"key"`
+	Value []byte      `msgpack:"value,omitempty"`
+}
+
+// BatchCommand 批量命令，用于在单个 Raft 日志中执行多个操作
+type BatchCommand struct {
+	Items []BatchCommandItem `msgpack:"items"`
 }
 
 // ==================== FSM 实现 ====================
@@ -78,9 +91,34 @@ func (f *BitcaskFSM) Apply(log *raft.Log) interface{} {
 		}
 		return nil
 
+	case CommandBatch:
+		// 执行批量操作
+		batchCmd, err := decodeBatchCommand(log.Data)
+		if err != nil {
+			return fmt.Errorf("解析批量命令失败: %w", err)
+		}
+		return f.applyBatch(batchCmd)
+
 	default:
 		return fmt.Errorf("未知的命令类型: %s", cmd.Type)
 	}
+}
+
+// applyBatch 执行批量命令
+func (f *BitcaskFSM) applyBatch(cmd *BatchCommand) error {
+	for _, item := range cmd.Items {
+		switch item.Type {
+		case CommandPut:
+			if err := f.engine.Put(item.Key, item.Value); err != nil {
+				return fmt.Errorf("Batch Put 执行失败: %w", err)
+			}
+		case CommandDelete:
+			if err := f.engine.Delete(item.Key); err != nil {
+				return fmt.Errorf("Batch Delete 执行失败: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // Snapshot 创建状态机的快照
@@ -175,6 +213,22 @@ func encodeCommand(cmd *LogCommand) ([]byte, error) {
 func decodeCommand(data []byte, cmd *LogCommand) error {
 	dec := codec.NewDecoderBytes(data, &codec.MsgpackHandle{})
 	return dec.Decode(cmd)
+}
+
+// encodeBatchCommand 将 BatchCommand 编码为字节数组
+func encodeBatchCommand(cmd *BatchCommand) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := codec.NewEncoder(&buf, &codec.MsgpackHandle{})
+	err := enc.Encode(cmd)
+	return buf.Bytes(), err
+}
+
+// decodeBatchCommand 从字节数组解码 BatchCommand
+func decodeBatchCommand(data []byte) (*BatchCommand, error) {
+	var cmd BatchCommand
+	dec := codec.NewDecoderBytes(data, &codec.MsgpackHandle{})
+	err := dec.Decode(&cmd)
+	return &cmd, err
 }
 
 // 确保 BitcaskFSM 实现了 raft.FSM 接口

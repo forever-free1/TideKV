@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/forever-free1/TideKV/raft"
 	"github.com/forever-free1/TideKV/watch"
 )
 
@@ -18,6 +19,8 @@ type ConsistentNode interface {
 	Get(key []byte) ([]byte, error)
 	ConsistentGet(sessionID string, key []byte) ([]byte, error)
 	Delete(key []byte) error
+	BatchPut(items []raft.BatchCommandItem) error
+	BatchDelete(keys [][]byte) error
 	NewSession(sessionID string)
 }
 
@@ -62,6 +65,7 @@ func (h *Handler) RegisterRoutes(engine *gin.Engine) {
 		{
 			kv.POST("/put", h.Put)
 			kv.POST("/put_with_session", h.PutWithSession)
+			kv.POST("/batch_put", h.BatchPut)
 			kv.GET("/get", h.Get)
 			kv.GET("/consistent_get", h.ConsistentGet)
 			kv.DELETE("/delete", h.Delete)
@@ -150,6 +154,61 @@ func (h *Handler) PutWithSession(c *gin.Context) {
 		"message": "ok",
 		"key":     req.Key,
 		"index":   index,
+	})
+}
+
+// BatchPutItem 批量写入的单个项
+type BatchPutItem struct {
+	Key   string `json:"key" binding:"required"`
+	Value string `json:"value" binding:"required"`
+}
+
+// BatchPut 请求处理
+// POST /v1/kv/batch_put
+// 批量写入键值对
+func (h *Handler) BatchPut(c *gin.Context) {
+	type BatchPutRequest struct {
+		Items []BatchPutItem `json:"items" binding:"required"`
+	}
+
+	var req BatchPutRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	if len(req.Items) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "items cannot be empty",
+		})
+		return
+	}
+
+	// 转换请求为 BatchCommandItem
+	items := make([]raft.BatchCommandItem, len(req.Items))
+	for i, item := range req.Items {
+		items[i] = raft.BatchCommandItem{
+			Type:  raft.CommandPut,
+			Key:   []byte(item.Key),
+			Value: []byte(item.Value),
+		}
+	}
+
+	// 批量写入
+	err := h.node.BatchPut(items)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "batch put failed: " + err.Error(),
+		})
+		return
+	}
+
+	// 返回成功
+	c.JSON(http.StatusOK, gin.H{
+		"message": "ok",
+		"count":   len(req.Items),
 	})
 }
 

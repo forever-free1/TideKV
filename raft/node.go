@@ -288,6 +288,47 @@ func (n *Node) Delete(key []byte) error {
 	return nil
 }
 
+// BatchPut 批量写入键值对
+// 所有操作通过单个 Raft 日志提交，提高批量写入性能
+func (n *Node) BatchPut(items []BatchCommandItem) error {
+	// 创建批量命令
+	cmd := &BatchCommand{
+		Items: items,
+	}
+
+	// 编码命令
+	data, err := encodeBatchCommand(cmd)
+	if err != nil {
+		return fmt.Errorf("编码批量命令失败: %w", err)
+	}
+
+	// 提交到 Raft
+	applyFuture := n.raft.Apply(data, 10*time.Second) // 批量操作使用更长的超时
+	if err := applyFuture.Error(); err != nil {
+		return fmt.Errorf("提交应用到 Raft 失败: %w", err)
+	}
+
+	// 检查返回结果
+	if err, ok := applyFuture.Response().(error); ok && err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// BatchDelete 批量删除键值对
+// 所有操作通过单个 Raft 日志提交，提高批量删除性能
+func (n *Node) BatchDelete(keys [][]byte) error {
+	items := make([]BatchCommandItem, len(keys))
+	for i, key := range keys {
+		items[i] = BatchCommandItem{
+			Type: CommandDelete,
+			Key:  key,
+		}
+	}
+	return n.BatchPut(items)
+}
+
 // ==================== 集群管理 ====================
 
 // AddPeer 添加节点到集群
