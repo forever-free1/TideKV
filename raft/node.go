@@ -31,11 +31,27 @@ type NodeConfig struct {
 
 	// TLS 配置
 	TLS *TLSConfig // TLS 配置（可选）
+
+	// 连接池配置
+	MaxPool int           // 最大连接池大小（默认 3）
+	Timeout time.Duration // 超时时间（默认 10 秒）
 }
 
 // WithTLS 设置 TLS 配置
 func (c *NodeConfig) WithTLS(tlsCfg *TLSConfig) *NodeConfig {
 	c.TLS = tlsCfg
+	return c
+}
+
+// WithMaxPool 设置连接池大小
+func (c *NodeConfig) WithMaxPool(maxPool int) *NodeConfig {
+	c.MaxPool = maxPool
+	return c
+}
+
+// WithTimeout 设置超时时间
+func (c *NodeConfig) WithTimeout(timeout time.Duration) *NodeConfig {
+	c.Timeout = timeout
 	return c
 }
 
@@ -121,11 +137,19 @@ func NewNode(engine storage.Engine, config *NodeConfig) (*Node, error) {
 	}
 
 	// 配置传输层（TCP）
+	maxPool := config.MaxPool
+	if maxPool <= 0 {
+		maxPool = 3
+	}
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
 	transport, err := raft.NewTCPTransport(
 		config.BindAddr,
 		nil, // 监听器由 Raft 自动创建
-		3,   // max pool
-		10*time.Second,
+		maxPool,
+		timeout,
 		os.Stderr,
 	)
 	if err != nil {
