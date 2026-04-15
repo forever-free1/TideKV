@@ -402,15 +402,34 @@ func (h *Handler) Watch(c *gin.Context) {
 
 // ==================== 服务器启动 ====================
 
+// ServerConfig 服务器配置
+type ServerConfig struct {
+	Addr   string
+	TLS    *TLSConfig // TLS 配置（可选）
+}
+
 // Server HTTP 服务器
 type Server struct {
 	addr    string
 	engine  *gin.Engine
 	handler *Handler
+	tlsCfg  *TLSConfig
+}
+
+// TLSConfig TLS 配置
+type TLSConfig struct {
+	// 证书文件
+	CertFile string
+	// 私钥文件
+	KeyFile string
+	// CA 证书文件（用于 mTLS 客户端验证）
+	CAFile string
+	// 是否启用客户端证书验证（mTLS）
+	VerifyClientCert bool
 }
 
 // NewServer 创建新的 Server
-func NewServer(addr string, node ConsistentNode, watchHub *watch.WatchHub) *Server {
+func NewServer(cfg ServerConfig, node ConsistentNode, watchHub *watch.WatchHub) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 
@@ -418,10 +437,16 @@ func NewServer(addr string, node ConsistentNode, watchHub *watch.WatchHub) *Serv
 	handler.RegisterRoutes(engine)
 
 	return &Server{
-		addr:    addr,
+		addr:    cfg.Addr,
 		engine:  engine,
 		handler: handler,
+		tlsCfg:  cfg.TLS,
 	}
+}
+
+// NewServerWithTLS 创建支持 TLS 的 Server
+func NewServerWithTLS(addr string, tlsCfg *TLSConfig, node ConsistentNode, watchHub *watch.WatchHub) *Server {
+	return NewServer(ServerConfig{Addr: addr, TLS: tlsCfg}, node, watchHub)
 }
 
 // Start 启动服务器
@@ -437,4 +462,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // StartTLS 启动 HTTPS 服务器
 func (s *Server) StartTLS(certFile, keyFile string) error {
 	return s.engine.RunTLS(s.addr, certFile, keyFile)
+}
+
+// StartTLSWithConfig 启动 HTTPS 服务器（使用配置）
+func (s *Server) StartTLSWithConfig() error {
+	if s.tlsCfg == nil {
+		return fmt.Errorf("TLS config not provided")
+	}
+	return s.engine.RunTLS(s.addr, s.tlsCfg.CertFile, s.tlsCfg.KeyFile)
 }

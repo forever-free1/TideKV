@@ -28,6 +28,15 @@ type NodeConfig struct {
 	// 集群配置
 	Bootstrap bool          // 是否引导集群
 	Peers     []raft.Server // 初始集群节点
+
+	// TLS 配置
+	TLS *TLSConfig // TLS 配置（可选）
+}
+
+// WithTLS 设置 TLS 配置
+func (c *NodeConfig) WithTLS(tlsCfg *TLSConfig) *NodeConfig {
+	c.TLS = tlsCfg
+	return c
 }
 
 // Node Raft 节点封装
