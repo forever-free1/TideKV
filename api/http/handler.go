@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/forever-free1/TideKV/raft"
 	"github.com/forever-free1/TideKV/watch"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // ==================== Handler 定义 ====================
@@ -57,6 +58,9 @@ func NewHandler(node ConsistentNode, watchHub *watch.WatchHub) *Handler {
 func (h *Handler) RegisterRoutes(engine *gin.Engine) {
 	// 健康检查
 	engine.GET("/health", h.HealthCheck)
+
+	// Prometheus Metrics 端点
+	engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// KV 存储 API
 	v1 := engine.Group("/v1")
